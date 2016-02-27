@@ -1,0 +1,379 @@
+<html>
+<head>
+<script src="three.min.js"></script>
+<script src="GradientBuilder/GradientBuilder.js"></script>
+<script type="x-shader/x-vertex" id="vertex">
+	// The most basic of vertex shaders...
+	varying vec2 vUv;
+
+	void main()
+	{
+		vUv = uv;
+		gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.);
+	}
+</script>
+<script type="x-shader/x-vertex" id="fragment">
+	float PI = 3.1415926535897932384626433832795;
+
+	// Gradient texture
+	uniform sampler2D gradient;
+
+	// Viewport dimensions
+	uniform float viewportWidth;
+	uniform float viewportHeight;
+
+	// Poorly named time values (they were originally used for something else)
+	uniform float xoffset;
+	uniform float yoffset;
+
+	// ----------------------------------------------------------------------------------------------
+	// I did not write this awesome 4D simplex noise algorithm. All credit goes to the author below.
+	// ----------------------------------------------------------------------------------------------
+	//
+	// Description : Array and textureless GLSL 2D/3D/4D simplex 
+	//               noise functions.
+	//      Author : Ian McEwan, Ashima Arts.
+	//  Maintainer : ijm
+	//     Lastmod : 20110822 (ijm)
+	//     License : Copyright (C) 2011 Ashima Arts. All rights reserved.
+	//               Distributed under the MIT License. See LICENSE file.
+	//               https://github.com/ashima/webgl-noise
+	// 
+	vec3 mod289(vec3 x) {
+		return x - floor(x * (1.0 / 289.0)) * 289.0;
+	}
+
+	vec4 mod289(vec4 x) {
+		return x - floor(x * (1.0 / 289.0)) * 289.0;
+	}
+
+	vec4 permute(vec4 x) {
+		return mod289(((x*34.0)+1.0)*x);
+	}
+
+	vec4 taylorInvSqrt(vec4 r)
+	{
+		return 1.79284291400159 - 0.85373472095314 * r;
+	}
+
+	float snoise(vec3 v)
+	{
+		const vec2  C = vec2(1.0/6.0, 1.0/3.0) ;
+		const vec4  D = vec4(0.0, 0.5, 1.0, 2.0);
+
+		// First corner
+		vec3 i  = floor(v + dot(v, C.yyy) );
+		vec3 x0 =   v - i + dot(i, C.xxx) ;
+
+		// Other corners
+		vec3 g = step(x0.yzx, x0.xyz);
+		vec3 l = 1.0 - g;
+		vec3 i1 = min( g.xyz, l.zxy );
+		vec3 i2 = max( g.xyz, l.zxy );
+
+		//   x0 = x0 - 0.0 + 0.0 * C.xxx;
+		//   x1 = x0 - i1  + 1.0 * C.xxx;
+		//   x2 = x0 - i2  + 2.0 * C.xxx;
+		//   x3 = x0 - 1.0 + 3.0 * C.xxx;
+		vec3 x1 = x0 - i1 + C.xxx;
+		vec3 x2 = x0 - i2 + C.yyy; // 2.0*C.x = 1/3 = C.y
+		vec3 x3 = x0 - D.yyy;      // -1.0+3.0*C.x = -0.5 = -D.y
+
+		// Permutations
+		i = mod289(i);
+		vec4 p = permute( permute( permute(
+		     i.z + vec4(0.0, i1.z, i2.z, 1.0 ))
+		   + i.y + vec4(0.0, i1.y, i2.y, 1.0 ))
+		   + i.x + vec4(0.0, i1.x, i2.x, 1.0 ));
+
+		// Gradients: 7x7 points over a square, mapped onto an octahedron.
+		// The ring size 17*17 = 289 is close to a multiple of 49 (49*6 = 294)
+		float n_ = 0.142857142857; // 1.0/7.0
+		vec3  ns = n_ * D.wyz - D.xzx;
+
+		vec4 j = p - 49.0 * floor(p * ns.z * ns.z);  //  mod(p,7*7)
+
+		vec4 x_ = floor(j * ns.z);
+		vec4 y_ = floor(j - 7.0 * x_ );    // mod(j,N)
+
+		vec4 x = x_ *ns.x + ns.yyyy;
+		vec4 y = y_ *ns.x + ns.yyyy;
+		vec4 h = 1.0 - abs(x) - abs(y);
+
+		vec4 b0 = vec4( x.xy, y.xy );
+		vec4 b1 = vec4( x.zw, y.zw );
+
+		//vec4 s0 = vec4(lessThan(b0,0.0))*2.0 - 1.0;
+		//vec4 s1 = vec4(lessThan(b1,0.0))*2.0 - 1.0;
+		vec4 s0 = floor(b0)*2.0 + 1.0;
+		vec4 s1 = floor(b1)*2.0 + 1.0;
+		vec4 sh = -step(h, vec4(0.0));
+
+		vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy ;
+		vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww ;
+
+		vec3 p0 = vec3(a0.xy,h.x);
+		vec3 p1 = vec3(a0.zw,h.y);
+		vec3 p2 = vec3(a1.xy,h.z);
+		vec3 p3 = vec3(a1.zw,h.w);
+
+		//Normalise gradients
+		vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+		p0 *= norm.x;
+		p1 *= norm.y;
+		p2 *= norm.z;
+		p3 *= norm.w;
+
+		// Mix final noise value
+		vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+		m = m * m;
+		return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1),
+		                        	dot(p2,x2), dot(p3,x3) ) );
+	}
+
+
+	// Here's where my code starts
+
+	// Generates a simplex noise value between 0 and 1 from a 3-dimensional input. I combine 4 octaves of simplex noise, taking the absolute
+	// value of the noise values returned to give it a nice veiny feel.
+	float TurbulentSimplexNoise(float x, float y, float z, float roughness, float scale)
+	{
+		float frequency = scale;
+		float weight = 1.0;
+		float total = 0.0;
+		float totalWeight = 0.0;
+
+		for(float i = 1.0; i < 4.0; i++)
+		{
+			total += abs(snoise(vec3((x + xoffset) / frequency, (y + yoffset * i) / frequency, (z * i)/frequency))) * weight;
+
+			totalWeight += weight;
+			frequency *= 2.0;
+			weight *= roughness;
+		}
+
+		return total / totalWeight;
+	}
+
+
+	// A very helpful algorithm for calculating the distance between a 2D point and the edge of a 2D ellipse (which is way harder than it seems on the surface).
+	// All credit goes to Inigo Quilez: http://www.iquilezles.org/
+	float sdEllipse( in vec2 z, in vec2 ab )
+	{
+	    vec2 p = abs( z ); if( p.x > p.y ){ p=p.yx; ab=ab.yx; }
+
+	    float l = ab.y*ab.y - ab.x*ab.x;
+	    float m = ab.x*p.x/l; float m2 = m*m;
+	    float n = ab.y*p.y/l; float n2 = n*n;
+	    float c = (m2 + n2 - 1.0)/3.0; float c3 = c*c*c;
+	    float q = c3 + m2*n2*2.0;
+	    float d = c3 + m2*n2;
+	    float g = m + m*n2;
+
+	    float co;
+
+	    if( d<0.0 )
+	    {
+	        float p = acos(q/c3)/3.0;
+	        float s = cos(p);
+	        float t = sin(p)*sqrt(3.0);
+	        float rx = sqrt( -c*(s + t + 2.0) + m2 );
+	        float ry = sqrt( -c*(s - t + 2.0) + m2 );
+	        co = ( ry + sign(l)*rx + abs(g)/(rx*ry) - m)/2.0;
+	    }
+	    else
+	    {
+	        float h = 2.0*m*n*sqrt( d );
+	        float s = sign(q+h)*pow( abs(q+h), 1.0/3.0 );
+	        float u = sign(q-h)*pow( abs(q-h), 1.0/3.0 );
+	        float rx = -s - u - c*4.0 + 2.0*m2;
+	        float ry = (s - u)*sqrt(3.0);
+	        float rm = sqrt( rx*rx + ry*ry );
+	        float p = ry/sqrt(rm-rx);
+	        co = (p + 2.0*g/rm - m)/2.0;
+	    }
+
+	    float si = sqrt( 1.0 - co*co );
+
+	    vec2 closestPoint = vec2( ab.x*co, ab.y*si );
+
+	    return length(closestPoint - p ) * sign(p.y-closestPoint.y);
+	}
+
+
+	varying vec2 vUv;
+
+	void main()
+	{
+		// Calculate this pixel's offset from the center of the screen and scale it relative to the viewport ratio
+		vec2 uv = (vUv - 0.5) * 2.0;
+		uv.x *= viewportWidth/viewportHeight;
+
+		// Distance to the center of the viewport
+		float dist = length(uv);
+
+		// Angle of the pixel's offset
+		float ang = atan(uv.y, uv.x);
+
+		// Angle scaled to 0 to 1 range
+		float t = (ang)/(PI * 2.0) + 0.5;
+
+		// Two slightly different noise values, generated using the pixel's distance from the center, creating a radial look.
+		// Each one is offset in the z-direction by a differently scaled time value (xoffset vs yoffset), causing them to change at
+		// different rates.
+		float n1 = TurbulentSimplexNoise(t * viewportWidth, dist * 100.0, xoffset, 2.0, 10.0);
+		float n2 = TurbulentSimplexNoise(t * viewportWidth, dist * 50.0, yoffset, 2.0, 10.0);
+
+		// Blending the two noise values based on square distance from the viewport centner
+		float n = mix(n2, n1, dist * dist);
+
+		// Calculating this pixel's distance from the edge of the pupil. I'm using noise to offset the distance a bit causing the pupil
+		// to flow a bit as well.
+		float ellipseDist = sdEllipse(uv + n1 * 0.02, vec2(0.032, 0.36 + sin(xoffset) * 0.01));
+
+		// Here, I generate two different colors by sampling the color gradient texture at a position offset by the noise values generated above.
+		// This is the inner part of the eye, containing the pupil
+		vec4 color1 = texture2D(gradient, vec2(0.5, abs(sin(ang) * 0.7) * ellipseDist * 1.2 + n * 0.2)) * smoothstep(0.0, 0.02, ellipseDist);
+		// This is the outer, fiery looking border
+		vec4 color2 = texture2D(gradient, vec2(0.5, dist + n * 0.3)) * (n1 + 0.25) * step(0.0, ellipseDist);
+
+		// Finally, I generate the complete image by adding the two noise colors together with different arbitrary weights
+		gl_FragColor = color1 + color2 * 1.7;
+	}
+</script>
+<script>
+	window.addEventListener('load', init);
+
+	var width = 720;
+	var height = 600;
+
+	var renderer;
+	var camera;
+	var scene;
+
+	var view = 45;
+	var aspect = width/height;
+	var near = 1;
+	var far = 10000;
+
+	// TEST
+	var mesh;
+	var material;
+
+	function init()
+	{
+		renderer = new THREE.WebGLRenderer();
+		renderer.setSize(width, height);
+
+		var hw = width / 2;
+		var hh = height / 2;
+		camera = new THREE.OrthographicCamera(-hw, hw, hh, -hh, near, far);
+		camera.position.z = 1000;
+
+		scene = new THREE.Scene();
+		scene.add(camera);
+
+		document.getElementById('body').appendChild(renderer.domElement);
+
+		//-----------------------------------------------------------------
+		// SCENE SETUP
+		//-----------------------------------------------------------------
+
+		// Flames Gradient
+		var g = Gradient();
+		g.AddColorStep(0.00, Color(255, 195, 65, 255), "1");
+		g.AddColorStep(0.02, Color(255, 195, 65, 255), "2");
+		g.AddColorStep(0.10, Color(225, 15, 0, 255), "3");
+		g.AddColorStep(0.25, Color(55, 05, 0, 255), "4");
+		g.AddColorStep(0.35, Color(55, 05, 0, 255), "5");
+		g.AddColorStep(0.55, Color(120, 05, 0, 255), "6");
+		g.AddColorStep(0.60, Color(255, 195, 65, 255), "7");
+		g.AddColorStep(0.605, Color(255, 195, 65, 255), "8");
+		g.AddColorStep(0.70, Color(225, 75, 0, 255), "9");
+		g.AddColorStep(0.80, Color(125, 15, 0, 255), "10");
+		g.AddColorStep(0.95, Color(0, 0, 0, 255), "11");
+		g.AddColorStep(1, Color(0, 0, 0, 255), "12");
+		g3Tex = BuildGradientTexture(g, 256, 256);
+
+		// Flames Material and Mesh
+		material = new THREE.ShaderMaterial({
+			uniforms: {
+				gradient: {type: 't', value: g3Tex},
+				viewportWidth: {type: 'f', value: width},
+				viewportHeight: {type: 'f', value: height},
+				xoffset: {type: 'f', value: 0},
+				yoffset: {type: 'f', value: 0}
+			},
+			vertexShader: document.getElementById('vertex').textContent,
+			fragmentShader: document.getElementById('fragment').textContent
+		});
+
+		mesh = new THREE.Mesh(
+			new THREE.PlaneBufferGeometry(width, height, 1, 1),
+			material
+		);
+		scene.add(mesh);
+
+
+		// Begin Draw Loop
+		function draw(){
+
+			material.uniforms.yoffset.value -= 0.1;
+			material.uniforms.xoffset.value += 0.1;
+			material.uniforms.needsUpdate = true;
+			renderer.render(scene, camera);
+
+			requestAnimationFrame(draw)
+		};
+
+		requestAnimationFrame(draw);
+	};
+
+	function BuildGradientTexture(gradient, width, height)
+	{
+		var texData = new Uint8Array(width * height * 4);
+		for(var i = 0; i < width; i++)
+		{
+			for(var j = 0; j < height; j++)
+			{
+				var c = gradient.GetColorAt((height - 1 - j)/(height - 1));
+				var p = (j * height + i) * 4;
+				texData[p] = c.r;
+				texData[p + 1] = c.g;
+				texData[p + 2] = c.b;
+				texData[p + 3] = c.a;
+			}
+		}
+		var texture = new THREE.DataTexture(texData, 256, 256, THREE.RGBAFormat);
+		texture.wrapS = THREE.ClampToEdgeWrapping;
+		texture.wrapT = THREE.ClampToEdgeWrapping;
+		texture.minFilter = THREE.NearestFilter;
+		texture.magFilter = THREE.NearestFilter;
+		texture.needsUpdate = true;
+
+		return texture;
+	};
+
+</script>
+<link href='https://fonts.googleapis.com/css?family=Fira+Sans:400,300,500' rel='stylesheet' type='text/css'>
+<style>
+	body {
+		background-color: #141516;
+		width: 100%;
+	}
+	#demo-title {
+		color: #efefef;
+		font-family: "Fira Sans", sans-serif;
+		text-align: center;
+		padding-top: 50px;
+	}
+	canvas {
+		display: block;
+		margin: 0 auto;
+	}
+</style>
+</head>
+<h2 id='demo-title'>Evil Eye</h2>
+<body id='body'>
+</body>
+</html>
